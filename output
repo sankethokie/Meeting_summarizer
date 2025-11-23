@@ -1,0 +1,29 @@
+
+=== MEETING SUMMARY ===
+1. welcome everyone today we will review our q2 performance
+2. we need to follow up with support team for customer issues
+3. please assign the bug fix to qa we should fix it soon
+
+=== KEYWORDS ===
+- fix: 0.71
+- release: 0.50
+- preparing: 0.50
+- documentation: 0.50
+- start: 0.50
+- q2: 0.45
+- today: 0.45
+- welcome: 0.45
+- performance: 0.45
+- review: 0.45
+
+=== ACTION ITEMS ===
+- welcome everyone today we will review our q2 performance | Assignees: []
+- action item bob to create the finance deck by monday | Assignees: []
+- we need to follow up with support team for customer issues | Assignees: []
+- please assign the bug fix to qa we should fix it soon | Assignees: []
+- i will start preparing the documentation for the release | Assignees: []
+...
+Files saved:
+- meeting_ai_minutes.json
+- meeting_ai_speaker_stats.csv
+- meeting_ai_action_items.csv
