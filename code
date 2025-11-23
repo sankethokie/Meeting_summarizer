@@ -1,0 +1,230 @@
+pip install pandas
+pip install nltk
+pip install spacy 
+pip install scikit-learn
+pip install vaderSentiment 
+pip install network
+
+import os
+import json
+import re
+import pandas as pd
+import numpy as np
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import networkx as nx
+
+vader = SentimentIntensityAnalyzer()
+
+# -------------------------------------------------------------------
+# 1. Clean text
+# -------------------------------------------------------------------
+def clean_text(txt):
+    if not isinstance(txt, str):
+        return ""
+    txt = txt.lower()
+    txt = re.sub(r"[^a-z0-9\s]", " ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt
+
+
+# -------------------------------------------------------------------
+# 2. Custom sentence tokenizer (NO NLTK / NO spaCy)
+# -------------------------------------------------------------------
+def sent_tokenize(text):
+    # Split on punctuation followed by space
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    return sentences
+
+
+# -------------------------------------------------------------------
+# 3. Extractive Summary (TF-IDF + TextRank)
+# -------------------------------------------------------------------
+def extractive_summary(sentences, top_k=3):
+    if len(sentences) <= top_k:
+        return sentences
+
+    vectorizer = TfidfVectorizer(stop_words="english")
+    X = vectorizer.fit_transform(sentences)
+
+    sim_mat = cosine_similarity(X)
+    graph = nx.from_numpy_array(sim_mat)
+    scores = nx.pagerank(graph)
+
+    ranked = sorted(((scores[i], s) for i, s in enumerate(sentences)), reverse=True)
+    return [s for _, s in ranked[:top_k]]
+
+
+# -------------------------------------------------------------------
+# 4. Keyword Extraction (TF-IDF)
+# -------------------------------------------------------------------
+def extract_keywords(sentences, top_n=10):
+    if len(sentences) == 0:
+        return []
+
+    vectorizer = TfidfVectorizer(stop_words="english")
+    X = vectorizer.fit_transform(sentences)
+
+    scores = np.asarray(X.sum(axis=0)).flatten()
+    terms = vectorizer.get_feature_names_out()
+    idx = np.argsort(scores)[::-1]
+
+    return [(terms[i], float(scores[i])) for i in idx[:top_n]]
+
+
+# -------------------------------------------------------------------
+# 5. Action Item Extraction (Regex-based)
+# -------------------------------------------------------------------
+ACTION_PATTERNS = [
+    r"\baction\b",
+    r"\baction item\b",
+    r"\bto do\b",
+    r"\bassign\b",
+    r"\bplease\b",
+    r"\bshould\b",
+    r"\bwill\b",
+    r"\bshall\b",
+    r"\bwe need to\b",
+    r"\bfollow up\b"
+]
+ACTION_RE = re.compile("|".join(ACTION_PATTERNS), flags=re.IGNORECASE)
+
+def extract_action_items(sentences):
+    items = []
+    for i, s in enumerate(sentences):
+        if ACTION_RE.search(s):
+            # naive assignee detection: capitalized words
+            assignees = re.findall(r"\b[A-Z][a-z]+\b", s)
+            items.append({
+                "sentence": s,
+                "assignees": assignees,
+                "sentence_index": i
+            })
+    return items
+
+
+# -------------------------------------------------------------------
+# 6. Speaker Statistics
+# -------------------------------------------------------------------
+def compute_speaker_stats(df):
+    stats = []
+    for speaker, grp in df.groupby("speaker"):
+        text = " ".join(grp["text"])
+        tokens = text.split()
+        token_count = len(tokens)
+        turns = len(grp)
+
+        speaking_time_sec = round((token_count / 150) * 60, 2)  # 150 wpm
+
+        sentiments = [vader.polarity_scores(t)["compound"] for t in grp["text"]]
+        avg_sent = round(float(np.mean(sentiments)), 3)
+
+        stats.append({
+            "speaker": speaker,
+            "turns": turns,
+            "token_count": token_count,
+            "est_speaking_seconds": speaking_time_sec,
+            "avg_sentiment": avg_sent
+        })
+
+    return pd.DataFrame(stats).sort_values("est_speaking_seconds", ascending=False)
+
+
+# -------------------------------------------------------------------
+# 7. MEETING AI PIPELINE
+# -------------------------------------------------------------------
+def run_meeting_ai(df, output_prefix="meeting_ai"):
+
+    # Clean text
+    df["text"] = df["text"].astype(str).apply(clean_text)
+
+    # Build sentence list
+    sentences = []
+    for t in df["text"]:
+        sentences.extend(sent_tokenize(t))
+
+    # 1. Summary
+    summary = extractive_summary(sentences, top_k=3)
+
+    # 2. Keywords
+    keywords = extract_keywords(sentences, top_n=10)
+
+    # 3. Action Items
+    action_items = extract_action_items(sentences)
+
+    # 4. Speaker Stats
+    speaker_stats = compute_speaker_stats(df)
+
+    # 5. Follow-up suggestions
+    followups = []
+    for ai in action_items:
+        if ai["assignees"]:
+            followups.append(f"Follow up with {', '.join(ai['assignees'])}: {ai['sentence']}")
+        else:
+            followups.append(f"Assign owner: {ai['sentence']}")
+
+    # Save outputs
+    minutes = {
+        "summary": summary,
+        "keywords": keywords,
+        "action_items": action_items,
+        "speaker_stats": speaker_stats.to_dict(orient="records"),
+        "followups": followups
+    }
+
+    with open(f"{output_prefix}_minutes.json", "w") as f:
+        json.dump(minutes, f, indent=2)
+
+    speaker_stats.to_csv(f"{output_prefix}_speaker_stats.csv", index=False)
+    pd.DataFrame(action_items).to_csv(f"{output_prefix}_action_items.csv", index=False)
+
+    # Print to screen
+    print("\n=== MEETING SUMMARY ===")
+    for i, s in enumerate(summary, 1):
+        print(f"{i}. {s}")
+
+    print("\n=== KEYWORDS ===")
+    for k, sc in keywords:
+        print(f"- {k}: {sc:.2f}")
+
+    print("\n=== ACTION ITEMS ===")
+    if action_items:
+        for ai in action_items:
+            print(f"- {ai['sentence']} | Assignees: {ai['assignees']}")
+    else:
+        print("None")
+
+    print("\n=== SPEAKER STATISTICS ===")
+    print(speaker_stats)
+
+    print("\n=== FOLLOW-UPS ===")
+    for f in followups:
+        print("-", f)
+
+    print("\nFiles saved:")
+    print(f"- {output_prefix}_minutes.json")
+    print(f"- {output_prefix}_speaker_stats.csv")
+    print(f"- {output_prefix}_action_items.csv")
+
+    return minutes
+
+
+# -------------------------------------------------------------------
+# 8. SAMPLE MEETING
+# -------------------------------------------------------------------
+sample_df = pd.DataFrame({
+    "speaker": ["Alice", "Bob", "Alice", "Carol", "Bob"],
+    "text": [
+        "Welcome everyone. Today we will review our Q2 performance.",
+        "Action item: Bob to create the finance deck by Monday.",
+        "We need to follow up with support team for customer issues.",
+        "Please assign the bug fix to QA. We should fix it soon.",
+        "I will start preparing the documentation for the release."
+    ]
+})
+
+# RUN EVERYTHING
+minutes = run_meeting_ai(sample_df)
